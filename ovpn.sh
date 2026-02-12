@@ -27,15 +27,23 @@ echo "[+] System prep..."
 
 ln -fs /usr/share/zoneinfo/Asia/Manila /etc/localtime || true
 
-apt update -y
-apt upgrade -y
+echo "[+] Installing packages..."
+
+apt update -y || true
 
 apt install -y 
-curl wget jq sudo git 
-openvpn easy-rsa 
-squid stunnel4 
+curl 
+wget 
+jq 
+sudo 
+git 
+openvpn 
+easy-rsa 
+squid 
+stunnel4 
 iptables-persistent 
-certbot python3
+certbot 
+python3
 
 sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4
 
