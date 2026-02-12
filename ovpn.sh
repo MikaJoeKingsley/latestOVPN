@@ -83,7 +83,6 @@ echo "$FULL_DOMAIN" > /etc/ErwanScript/domain
 
 echo "[+] Waiting DNS propagation..."
 sleep 10
-done
 
 ################################
 
