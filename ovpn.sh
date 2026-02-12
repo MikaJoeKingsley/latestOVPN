@@ -42,29 +42,47 @@ echo "[+] Fetching domain..."
 API_URL="https://apanel.mindfreak.online/api_formula/get_domain.php?server_id=${SERVER_ID}&token=${INSTALL_TOKEN}"
 API_JSON="$(curl -fsSL "$API_URL")"
 
+SUCCESS="$(echo "$API_JSON" | jq -r '.success')"
+[ "$SUCCESS" != "true" ] && echo "API error" && exit 1
+
 API_ENDPOINT="$(echo "$API_JSON" | jq -r '.api_endpoint')"
 AUTH_EMAIL="$(echo "$API_JSON" | jq -r '.email')"
 AUTH_KEY="$(echo "$API_JSON" | jq -r '.key')"
 ZONE_ID="$(echo "$API_JSON" | jq -r '.zone')"
 DOMAIN_NAME="$(echo "$API_JSON" | jq -r '.domain')"
 
-IP_ADDRESS="$(curl -4fsS https://api.ipify.org)"
-SUBDOMAIN="$(tr -dc a-z </dev/urandom | head -c5)"
-FULL_DOMAIN="${SUBDOMAIN}.${DOMAIN_NAME}"
+################################
+# CREATE RANDOM SUBDOMAIN
+################################
 
 echo "[+] Creating DNS record..."
 
-curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" 
--H "X-Auth-Email: $AUTH_EMAIL" 
--H "X-Auth-Key: $AUTH_KEY" 
--H "Content-Type: application/json" 
---data "{"type":"A","name":"$FULL_DOMAIN","content":"$IP_ADDRESS","ttl":1,"proxied":false}"
+IP_ADDRESS=$(curl -4s ipinfo.io/ip)
+SUBDOMAIN=$(tr -dc a-z </dev/urandom | head -c5)
+FULL_DOMAIN="${SUBDOMAIN}.${DOMAIN_NAME}"
+
+A_RECORD=$(cat <<EOF
+{
+"type":"A",
+"name":"$FULL_DOMAIN",
+"content":"$IP_ADDRESS",
+"ttl":1,
+"proxied":false
+}
+EOF
+)
+
+curl -s -X POST "$API_ENDPOINT/$ZONE_ID/dns_records" \
+-H "X-Auth-Email: $AUTH_EMAIL" \
+-H "X-Auth-Key: $AUTH_KEY" \
+-H "Content-Type: application/json" \
+--data "$A_RECORD"
+
+mkdir -p /etc/ErwanScript
+echo "$FULL_DOMAIN" > /etc/ErwanScript/domain
 
 echo "[+] Waiting DNS propagation..."
-
-until ping -c1 "$FULL_DOMAIN" &>/dev/null; do
-echo "Waiting DNS..."
-sleep 5
+sleep 10
 done
 
 ################################
