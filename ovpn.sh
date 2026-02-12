@@ -83,30 +83,23 @@ echo "[+] Waiting DNS propagation..."
 sleep 10
 
 ################################
-
-# SSL CERT
-
+# LET'S ENCRYPT SSL
 ################################
 
-echo "[+] Requesting SSL..."
+echo "[+] Requesting SSL certificate..."
 
-systemctl stop ws-ovpn squid openvpn-server@tcp openvpn-server@udp 2>/dev/null || true
-fuser -k 80/tcp 443/tcp 2>/dev/null || true
+systemctl stop squid 2>/dev/null || true
+systemctl stop stunnel4 2>/dev/null || true
 
-certbot certonly --standalone 
---preferred-challenges http 
--d "$FULL_DOMAIN" 
---non-interactive 
---agree-tos 
--m "admin@${DOMAIN_NAME}"
+certbot certonly --standalone \
+--preferred-challenges http \
+-d "$FULL_DOMAIN" \
+--non-interactive \
+--agree-tos \
+-m admin@$DOMAIN_NAME
 
 SSL_CERT="/etc/letsencrypt/live/$FULL_DOMAIN/fullchain.pem"
 SSL_KEY="/etc/letsencrypt/live/$FULL_DOMAIN/privkey.pem"
-
-if [ ! -f "$SSL_CERT" ]; then
-echo "SSL certificate failed!"
-exit 1
-fi
 
 ################################
 
