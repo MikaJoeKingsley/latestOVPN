@@ -31,19 +31,7 @@ echo "[+] Installing packages..."
 
 apt update -y || true
 
-apt install -y 
-curl 
-wget 
-jq 
-sudo 
-git 
-openvpn 
-easy-rsa 
-squid 
-stunnel4 
-iptables-persistent 
-certbot 
-python3
+apt install -y curl wget jq sudo git openvpn easy-rsa squid stunnel4 iptables-persistent certbot python3
 
 sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4
 
@@ -69,11 +57,11 @@ FULL_DOMAIN="${SUBDOMAIN}.${DOMAIN_NAME}"
 
 echo "[+] Creating DNS record..."
 
-curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" 
--H "X-Auth-Email: $AUTH_EMAIL" 
--H "X-Auth-Key: $AUTH_KEY" 
--H "Content-Type: application/json" 
---data "{"type":"A","name":"$FULL_DOMAIN","content":"$IP_ADDRESS","ttl":1,"proxied":false}"
+curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" \
+  -H "X-Auth-Email: $AUTH_EMAIL" \
+  -H "X-Auth-Key: $AUTH_KEY" \
+  -H "Content-Type: application/json" \
+  --data "{\"type\":\"A\",\"name\":\"$FULL_DOMAIN\",\"content\":\"$IP_ADDRESS\",\"ttl\":1,\"proxied\":false}"
 
 sleep 8
 
