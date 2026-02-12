@@ -1,45 +1,36 @@
 #!/bin/bash
 set -e
-
 export DEBIAN_FRONTEND=noninteractive
 
 ################################
-
-# VALIDATE INPUT
-
+# INPUT CHECK
 ################################
+
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
-SERVER_ID="${1:-}"
-INSTALL_TOKEN="${2:-}"
+SERVER_ID="$1"
+INSTALL_TOKEN="$2"
 
 if [[ -z "$SERVER_ID" || -z "$INSTALL_TOKEN" ]]; then
-echo "Usage: bash $0 <server_id> <install_token>"
-exit 1
+  echo "Usage: bash install.sh <server_id> <token>"
+  exit 1
 fi
 
 ################################
-
 # SYSTEM PREP
-
 ################################
-echo "[+] System prep..."
-
-ln -fs /usr/share/zoneinfo/Asia/Manila /etc/localtime || true
 
 echo "[+] Installing packages..."
 
-apt update -y || true
-
+apt update -y
 apt install -y curl wget jq sudo git openvpn easy-rsa squid stunnel4 iptables-persistent certbot python3
 
-sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4
+sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 || true
 
 ################################
-
 # FETCH DOMAIN
-
 ################################
+
 echo "[+] Fetching domain..."
 
 API_URL="https://apanel.mindfreak.online/api_formula/get_domain.php?server_id=${SERVER_ID}&token=${INSTALL_TOKEN}"
@@ -63,33 +54,34 @@ curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" \
   -H "Content-Type: application/json" \
   --data "{\"type\":\"A\",\"name\":\"$FULL_DOMAIN\",\"content\":\"$IP_ADDRESS\",\"ttl\":1,\"proxied\":false}"
 
-sleep 8
+echo "[+] Waiting DNS..."
+sleep 10
 
 ################################
-
 # SSL CERT
-
 ################################
+
 echo "[+] Requesting SSL..."
 
 systemctl stop ws-ovpn squid openvpn-server@tcp openvpn-server@udp 2>/dev/null || true
 fuser -k 80/tcp 443/tcp 2>/dev/null || true
 
-certbot certonly --standalone 
---preferred-challenges http 
--d "$FULL_DOMAIN" 
---non-interactive 
---agree-tos 
--m "admin@${DOMAIN_NAME}"
+certbot certonly --standalone \
+  --preferred-challenges http \
+  -d "$FULL_DOMAIN" \
+  --non-interactive \
+  --agree-tos \
+  -m "admin@${DOMAIN_NAME}"
 
 SSL_CERT="/etc/letsencrypt/live/$FULL_DOMAIN/fullchain.pem"
 SSL_KEY="/etc/letsencrypt/live/$FULL_DOMAIN/privkey.pem"
 
 ################################
-
-# OPENVPN CERTS
-
+# OPENVPN CERTIFICATES
 ################################
+
+echo "[+] Installing OpenVPN certificates..."
+
 mkdir -p /etc/openvpn/certificates
 
 cat >/etc/openvpn/certificates/ca.crt <<'EOF'
@@ -172,14 +164,7 @@ EOF
 
 chmod 600 /etc/openvpn/certificates/server.key
 
-################################
-
-# OPENVPN CONFIG
-
-################################
 PLUGIN="$(find /usr -name openvpn-plugin-auth-pam.so | head -n1)"
-
-groupadd -f vpnusers
 
 cat >/etc/pam.d/openvpn <<EOF
 auth required pam_unix.so
@@ -217,10 +202,9 @@ systemctl enable --now openvpn-server@tcp
 systemctl enable --now openvpn-server@udp
 
 ################################
-
 # STUNNEL SSL 442
-
 ################################
+
 cat >/etc/stunnel/stunnel.conf <<EOF
 foreground = no
 cert = $SSL_CERT
@@ -234,37 +218,43 @@ EOF
 systemctl enable --now stunnel4
 
 ################################
-
 # WEBSOCKET 80 + 443
-
 ################################
+
 cat >/usr/local/bin/ws-ovpn.py <<PY
 #!/usr/bin/env python3
 import asyncio, ssl
 
 async def pipe(a,b):
-try:
-while True:
-d=await a.read(4096)
-if not d: break
-b.write(d); await b.drain()
-except: pass
+    try:
+        while True:
+            d = await a.read(4096)
+            if not d: break
+            b.write(d)
+            await b.drain()
+    except: pass
 
-async def h(r,w):
-d=await r.read(2048)
-if b"websocket" not in d.lower():
-w.close(); return
-w.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
-await w.drain()
-rr,ww=await asyncio.open_connection("127.0.0.1",1194)
-await asyncio.gather(pipe(r,ww),pipe(rr,w))
+async def handler(r,w):
+    d = await r.read(2048)
+    if b"websocket" not in d.lower():
+        w.close()
+        return
+
+    w.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+    await w.drain()
+
+    rr,ww = await asyncio.open_connection("127.0.0.1",1194)
+    await asyncio.gather(pipe(r,ww),pipe(rr,w))
 
 async def main():
-ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain("$SSL_CERT","$SSL_KEY")
-s1=await asyncio.start_server(h,"0.0.0.0",80)
-s2=await asyncio.start_server(h,"0.0.0.0",443,ssl=ctx)
-async with s1,s2: await asyncio.gather(s1.serve_forever(),s2.serve_forever())
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain("$SSL_CERT","$SSL_KEY")
+
+    s1 = await asyncio.start_server(handler,"0.0.0.0",80)
+    s2 = await asyncio.start_server(handler,"0.0.0.0",443,ssl=ctx)
+
+    async with s1,s2:
+        await asyncio.gather(s1.serve_forever(),s2.serve_forever())
 
 asyncio.run(main())
 PY
@@ -272,9 +262,14 @@ PY
 chmod +x /usr/local/bin/ws-ovpn.py
 
 cat >/etc/systemd/system/ws-ovpn.service <<EOF
+[Unit]
+Description=WebSocket OpenVPN
+After=network.target
+
 [Service]
 ExecStart=/usr/bin/python3 /usr/local/bin/ws-ovpn.py
 Restart=always
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -283,10 +278,9 @@ systemctl daemon-reload
 systemctl enable --now ws-ovpn
 
 ################################
-
-# SQUID 8080 + 8000
-
+# SQUID PROXY
 ################################
+
 cat >/etc/squid/squid.conf <<EOF
 http_port 8080
 http_port 8000
@@ -300,17 +294,16 @@ EOF
 systemctl enable --now squid
 
 ################################
-
 # FIREWALL
-
 ################################
+
 IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 
 iptables -F
 iptables -t nat -F
 
 for p in 22 80 442 443 1194 8080 8000; do
-iptables -A INPUT -p tcp --dport $p -j ACCEPT
+  iptables -A INPUT -p tcp --dport $p -j ACCEPT
 done
 
 iptables -A INPUT -p udp --dport 1198 -j ACCEPT
@@ -319,13 +312,14 @@ iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o $IFACE -j MASQUERADE
 iptables-save > /etc/iptables/rules.v4
 
 ################################
-
 # DONE
-
 ################################
-echo "=== INSTALL COMPLETE ==="
+
+echo "============================"
+echo "INSTALL COMPLETE"
 echo "Domain: $FULL_DOMAIN"
 echo "TCP 1194 | UDP 1198"
 echo "WS 80 | WSS 443"
 echo "SSL 442"
 echo "Squid 8080/8000"
+echo "============================"
