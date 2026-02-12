@@ -76,8 +76,8 @@ curl -s -X POST "$API_ENDPOINT/$ZONE_ID/dns_records" \
 -H "Content-Type: application/json" \
 --data "$A_RECORD"
 
-mkdir -p /etc/JuanScript
-echo "$FULL_DOMAIN" > /etc/JuanScript/domain
+mkdir -p /etc/ErwanScript
+echo "$FULL_DOMAIN" > /etc/ErwanScript/domain
 
 echo "[+] Waiting DNS propagation..."
 sleep 10
