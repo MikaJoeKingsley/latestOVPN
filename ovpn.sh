@@ -10,12 +10,12 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
-SERVER_ID="$1"
-INSTALL_TOKEN="$2"
+SERVER_ID="${1:-}"
+INSTALL_TOKEN="${2:-}"
 
 if [[ -z "$SERVER_ID" || -z "$INSTALL_TOKEN" ]]; then
-echo "Usage: bash install.sh <server_id> <token>"
-exit 1
+  echo "Usage: bash $0 <server_id> <install_token>"
+  exit 1
 fi
 
 ################################
@@ -32,12 +32,10 @@ apt install -y curl wget jq sudo git openvpn squid stunnel4 iptables-persistent 
 sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 || true
 
 ################################
-
-# FETCH DOMAIN
-
+# FETCH DOMAIN FROM API
 ################################
 
-echo "[+] Fetching domain..."
+echo "[+] Fetching domain info..."
 
 API_URL="https://apanel.mindfreak.online/api_formula/get_domain.php?server_id=${SERVER_ID}&token=${INSTALL_TOKEN}"
 API_JSON="$(curl -fsSL "$API_URL")"
@@ -78,8 +76,8 @@ curl -s -X POST "$API_ENDPOINT/$ZONE_ID/dns_records" \
 -H "Content-Type: application/json" \
 --data "$A_RECORD"
 
-mkdir -p /etc/ErwanScript
-echo "$FULL_DOMAIN" > /etc/ErwanScript/domain
+mkdir -p /etc/JuanScript
+echo "$FULL_DOMAIN" > /etc/JuanScript/domain
 
 echo "[+] Waiting DNS propagation..."
 sleep 10
