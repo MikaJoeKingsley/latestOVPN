@@ -1,10 +1,12 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
 export DEBIAN_FRONTEND=noninteractive
 
 ################################
+
 # VALIDATE INPUT
+
 ################################
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
@@ -12,42 +14,40 @@ SERVER_ID="${1:-}"
 INSTALL_TOKEN="${2:-}"
 
 if [[ -z "$SERVER_ID" || -z "$INSTALL_TOKEN" ]]; then
-  echo "Usage: bash $0 <server_id> <install_token>"
-  exit 1
+echo "Usage: bash $0 <server_id> <install_token>"
+exit 1
 fi
 
 ################################
+
 # SYSTEM PREP
+
 ################################
 echo "[+] System prep..."
 
 ln -fs /usr/share/zoneinfo/Asia/Manila /etc/localtime || true
-timedatectl set-timezone Asia/Manila 2>/dev/null || true
 
 apt update -y
 apt upgrade -y
 
-apt install -y \
-  curl wget jq sudo git \
-  openvpn easy-rsa \
-  squid \
-  iptables-persistent \
-  certbot \
-  python3
+apt install -y 
+curl wget jq sudo git 
+openvpn easy-rsa 
+squid stunnel4 
+iptables-persistent 
+certbot python3
+
+sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4
 
 ################################
-# FETCH DOMAIN FROM API
+
+# FETCH DOMAIN
+
 ################################
-echo "[+] Fetching domain info..."
+echo "[+] Fetching domain..."
 
 API_URL="https://apanel.mindfreak.online/api_formula/get_domain.php?server_id=${SERVER_ID}&token=${INSTALL_TOKEN}"
 API_JSON="$(curl -fsSL "$API_URL")"
-
-SUCCESS="$(echo "$API_JSON" | jq -r '.success')"
-if [[ "$SUCCESS" != "true" ]]; then
-  echo "API error: $API_JSON"
-  exit 1
-fi
 
 API_ENDPOINT="$(echo "$API_JSON" | jq -r '.api_endpoint')"
 AUTH_EMAIL="$(echo "$API_JSON" | jq -r '.email')"
@@ -55,85 +55,45 @@ AUTH_KEY="$(echo "$API_JSON" | jq -r '.key')"
 ZONE_ID="$(echo "$API_JSON" | jq -r '.zone')"
 DOMAIN_NAME="$(echo "$API_JSON" | jq -r '.domain')"
 
-if [[ -z "$API_ENDPOINT" || -z "$AUTH_EMAIL" || -z "$AUTH_KEY" || -z "$ZONE_ID" || -z "$DOMAIN_NAME" ]]; then
-  echo "API returned missing fields: $API_JSON"
-  exit 1
-fi
-
-################################
-# CREATE RANDOM SUBDOMAIN (A RECORD)
-################################
-echo "[+] Creating DNS record..."
-
-IP_ADDRESS="$(curl -4fsS https://api.ipify.org || true)"
-if [[ -z "$IP_ADDRESS" ]]; then
-  IP_ADDRESS="$(curl -4fsS ipinfo.io/ip || true)"
-fi
-if [[ -z "$IP_ADDRESS" ]]; then
-  echo "Failed to detect public IP"
-  exit 1
-fi
-
+IP_ADDRESS="$(curl -4fsS https://api.ipify.org)"
 SUBDOMAIN="$(tr -dc a-z </dev/urandom | head -c5)"
 FULL_DOMAIN="${SUBDOMAIN}.${DOMAIN_NAME}"
 
-A_RECORD="$(cat <<EOF
-{
-  "type":"A",
-  "name":"$FULL_DOMAIN",
-  "content":"$IP_ADDRESS",
-  "ttl":1,
-  "proxied":false
-}
-EOF
-)"
+echo "[+] Creating DNS record..."
 
-curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" \
-  -H "X-Auth-Email: $AUTH_EMAIL" \
-  -H "X-Auth-Key: $AUTH_KEY" \
-  -H "Content-Type: application/json" \
-  --data "$A_RECORD" >/dev/null
+curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" 
+-H "X-Auth-Email: $AUTH_EMAIL" 
+-H "X-Auth-Key: $AUTH_KEY" 
+-H "Content-Type: application/json" 
+--data "{"type":"A","name":"$FULL_DOMAIN","content":"$IP_ADDRESS","ttl":1,"proxied":false}"
 
-mkdir -p /etc/ErwanScript
-echo "$FULL_DOMAIN" > /etc/ErwanScript/domain
-
-echo "[+] Waiting DNS propagation..."
-sleep 10
+sleep 8
 
 ################################
-# LET'S ENCRYPT SSL (needs 80 free)
+
+# SSL CERT
+
 ################################
-echo "[+] Requesting SSL certificate..."
+echo "[+] Requesting SSL..."
 
-# Stop anything that might be using ports 80/443
-systemctl stop ws-ovpn 2>/dev/null || true
-systemctl stop squid 2>/dev/null || true
-systemctl stop openvpn-server@tcp 2>/dev/null || true
-systemctl stop openvpn-server@udp 2>/dev/null || true
+systemctl stop ws-ovpn squid openvpn-server@tcp openvpn-server@udp 2>/dev/null || true
+fuser -k 80/tcp 443/tcp 2>/dev/null || true
 
-fuser -k 80/tcp 2>/dev/null || true
-fuser -k 443/tcp 2>/dev/null || true
-
-certbot certonly --standalone \
-  --preferred-challenges http \
-  -d "$FULL_DOMAIN" \
-  --non-interactive \
-  --agree-tos \
-  -m "admin@${DOMAIN_NAME}"
+certbot certonly --standalone 
+--preferred-challenges http 
+-d "$FULL_DOMAIN" 
+--non-interactive 
+--agree-tos 
+-m "admin@${DOMAIN_NAME}"
 
 SSL_CERT="/etc/letsencrypt/live/$FULL_DOMAIN/fullchain.pem"
 SSL_KEY="/etc/letsencrypt/live/$FULL_DOMAIN/privkey.pem"
 
-if [[ ! -f "$SSL_CERT" || ! -f "$SSL_KEY" ]]; then
-  echo "Let's Encrypt files not found"
-  exit 1
-fi
+################################
+
+# OPENVPN CERTS
 
 ################################
-# OPENVPN CERTS (your provided)
-################################
-echo "[+] Installing OpenVPN certificates..."
-
 mkdir -p /etc/openvpn/certificates
 
 cat >/etc/openvpn/certificates/ca.crt <<'EOF'
@@ -217,279 +177,159 @@ EOF
 chmod 600 /etc/openvpn/certificates/server.key
 
 ################################
-# OPENVPN (TCP 1194 + UDP 110) + PAM LINUX USERS
+
+# OPENVPN CONFIG
+
 ################################
-echo "[+] Configuring OpenVPN (PAM Linux users)..."
+PLUGIN="$(find /usr -name openvpn-plugin-auth-pam.so | head -n1)"
 
-PLUGIN="$(find /usr -name openvpn-plugin-auth-pam.so 2>/dev/null | head -n1 || true)"
-if [[ -z "$PLUGIN" ]]; then
-  echo "OpenVPN PAM plugin not found (openvpn-plugin-auth-pam.so)"
-  exit 1
-fi
-
-mkdir -p /etc/openvpn/server
-
-# PAM policy: restrict logins to users in vpnusers group (safer than allowing every system user)
 groupadd -f vpnusers
 
-cat >/etc/pam.d/openvpn <<'EOF'
-auth    required   pam_succeed_if.so user ingroup vpnusers
-auth    required   pam_unix.so nodelay
-
-account required   pam_succeed_if.so user ingroup vpnusers
-account required   pam_unix.so
+cat >/etc/pam.d/openvpn <<EOF
+auth required pam_unix.so
+account required pam_unix.so
 EOF
 
-COMMON_CFG="$(cat <<EOF
+COMMON_CFG=$(cat <<EOF
 dev tun
 user nobody
 group nogroup
-
 ca /etc/openvpn/certificates/ca.crt
 cert /etc/openvpn/certificates/server.crt
 key /etc/openvpn/certificates/server.key
-
-# For your config style
 dh none
 topology subnet
 server 10.10.0.0 255.255.255.0
-
-keepalive 10 60
-persist-key
-persist-tun
-
-verify-client-cert none
-username-as-common-name
 plugin $PLUGIN openvpn
-
 duplicate-cn
-
-# Compatibility (some clients)
-tls-cipher DEFAULT:@SECLEVEL=0
 tls-version-min 1.2
 auth SHA256
-data-ciphers AES-256-GCM:AES-128-GCM:AES-256-CBC
-data-ciphers-fallback AES-256-CBC
-
+cipher AES-256-CBC
 push "redirect-gateway def1"
 push "dhcp-option DNS 1.1.1.1"
 push "dhcp-option DNS 8.8.8.8"
-
 verb 3
 EOF
-)"
+)
 
-cat > /etc/openvpn/server/tcp.conf <<EOF
-port 1194
-proto tcp
-$COMMON_CFG
-EOF
+mkdir -p /etc/openvpn/server
 
-cat > /etc/openvpn/server/udp.conf <<EOF
-port 110
-proto udp
-$COMMON_CFG
-EOF
+echo -e "port 1194\nproto tcp\n$COMMON_CFG" > /etc/openvpn/server/tcp.conf
+echo -e "port 1198\nproto udp\n$COMMON_CFG" > /etc/openvpn/server/udp.conf
 
 systemctl enable --now openvpn-server@tcp
 systemctl enable --now openvpn-server@udp
-systemctl restart openvpn-server@tcp
-systemctl restart openvpn-server@udp
 
 ################################
-# WEBSOCKET (ONE PY FILE: WS 80 + WSS 443)
-################################
-echo "[+] Installing WS/WSS tunnel (Python asyncio)..."
 
-cat >/usr/local/bin/ws-ovpn.py <<'PY'
+# STUNNEL SSL 442
+
+################################
+cat >/etc/stunnel/stunnel.conf <<EOF
+foreground = no
+cert = $SSL_CERT
+key = $SSL_KEY
+
+[openvpn]
+accept = 442
+connect = 127.0.0.1:1194
+EOF
+
+systemctl enable --now stunnel4
+
+################################
+
+# WEBSOCKET 80 + 443
+
+################################
+cat >/usr/local/bin/ws-ovpn.py <<PY
 #!/usr/bin/env python3
-import asyncio
-import ssl
+import asyncio, ssl
 
-OPENVPN_HOST = "127.0.0.1"
-OPENVPN_PORT = 1194
+async def pipe(a,b):
+try:
+while True:
+d=await a.read(4096)
+if not d: break
+b.write(d); await b.drain()
+except: pass
 
-WS_HOST = "0.0.0.0"
-WS_PORT = 80
-
-WSS_HOST = "0.0.0.0"
-WSS_PORT = 443
-
-CERT_FILE = "/etc/letsencrypt/live/FULLDOMAIN/fullchain.pem"
-KEY_FILE  = "/etc/letsencrypt/live/FULLDOMAIN/privkey.pem"
-
-RESPONSE = (
-    b"HTTP/1.1 101 Switching Protocols\r\n"
-    b"Upgrade: websocket\r\n"
-    b"Connection: Upgrade\r\n"
-    b"\r\n"
-)
-
-def is_ws_upgrade(data: bytes) -> bool:
-    d = data.lower()
-    if b"upgrade: websocket" not in d:
-        return False
-    # accept common variants
-    if b"connection: upgrade" in d:
-        return True
-    if b"connection: keep-alive, upgrade" in d:
-        return True
-    return False
-
-async def pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
-    try:
-        while True:
-            chunk = await src.read(4096)
-            if not chunk:
-                break
-            dst.write(chunk)
-            await dst.drain()
-    except:
-        pass
-    finally:
-        try:
-            dst.close()
-        except:
-            pass
-
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    try:
-        data = await reader.read(2048)
-        if not data or not is_ws_upgrade(data):
-            writer.close()
-            return
-
-        writer.write(RESPONSE)
-        await writer.drain()
-
-        ovpn_reader, ovpn_writer = await asyncio.open_connection(OPENVPN_HOST, OPENVPN_PORT)
-
-        await asyncio.gather(
-            pipe(reader, ovpn_writer),
-            pipe(ovpn_reader, writer)
-        )
-    except:
-        try:
-            writer.close()
-        except:
-            pass
+async def h(r,w):
+d=await r.read(2048)
+if b"websocket" not in d.lower():
+w.close(); return
+w.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+await w.drain()
+rr,ww=await asyncio.open_connection("127.0.0.1",1194)
+await asyncio.gather(pipe(r,ww),pipe(rr,w))
 
 async def main():
-    # WS server
-    ws_server = await asyncio.start_server(handle_client, WS_HOST, WS_PORT)
+ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("$SSL_CERT","$SSL_KEY")
+s1=await asyncio.start_server(h,"0.0.0.0",80)
+s2=await asyncio.start_server(h,"0.0.0.0",443,ssl=ctx)
+async with s1,s2: await asyncio.gather(s1.serve_forever(),s2.serve_forever())
 
-    # WSS server
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
-    wss_server = await asyncio.start_server(handle_client, WSS_HOST, WSS_PORT, ssl=ctx)
-
-    async with ws_server, wss_server:
-        await asyncio.gather(ws_server.serve_forever(), wss_server.serve_forever())
-
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
 PY
 
-# Patch FULLDOMAIN in python file
-sed -i "s|FULLDOMAIN|$FULL_DOMAIN|g" /usr/local/bin/ws-ovpn.py
 chmod +x /usr/local/bin/ws-ovpn.py
 
 cat >/etc/systemd/system/ws-ovpn.service <<EOF
-[Unit]
-Description=OpenVPN WS/WSS Tunnel (WS:80 + WSS:443 -> 127.0.0.1:1194)
-After=network-online.target
-Wants=network-online.target
-
 [Service]
-Type=simple
 ExecStart=/usr/bin/python3 /usr/local/bin/ws-ovpn.py
 Restart=always
-RestartSec=2
-User=root
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
 systemctl enable --now ws-ovpn
-systemctl restart ws-ovpn
 
 ################################
-# SQUID (8080 only)
-################################
-echo "[+] Configuring Squid..."
 
-cat >/etc/squid/squid.conf <<'EOF'
+# SQUID 8080 + 8000
+
+################################
+cat >/etc/squid/squid.conf <<EOF
 http_port 8080
-
-# Allow VPN subnet only
+http_port 8000
 acl vpn src 10.10.0.0/24
 http_access allow vpn
 http_access deny all
-
-dns_nameservers 1.1.1.1 8.8.8.8
-visible_hostname vpn-server
-
 via off
 forwarded_for off
 EOF
 
 systemctl enable --now squid
-systemctl restart squid
 
 ################################
-# FIREWALL / NAT
+
+# FIREWALL
+
 ################################
-echo "[+] Configuring iptables..."
+IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 
-IFACE="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')"
-if [[ -z "$IFACE" ]]; then
-  echo "Failed to detect interface for NAT"
-  exit 1
-fi
-
-# Flush (be careful if you have existing firewall rules)
 iptables -F
 iptables -t nat -F
 
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
+for p in 22 80 442 443 1194 8080 8000; do
+iptables -A INPUT -p tcp --dport $p -j ACCEPT
+done
 
-# Allow required ports
-iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-iptables -A INPUT -p tcp --dport 1194 -j ACCEPT
-iptables -A INPUT -p udp --dport 110 -j ACCEPT
-iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-iptables -A INPUT -p tcp --dport 443 -j ACCEPT
-iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
-
-# NAT VPN subnet
-iptables -A FORWARD -s 10.10.0.0/24 -j ACCEPT
-iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o "$IFACE" -j MASQUERADE
+iptables -A INPUT -p udp --dport 1198 -j ACCEPT
+iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o $IFACE -j MASQUERADE
 
 iptables-save > /etc/iptables/rules.v4
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 
 ################################
-# FINISH
+
+# DONE
+
 ################################
-echo ""
-echo "=================================="
-echo "VPN INSTALL COMPLETE"
+echo "=== INSTALL COMPLETE ==="
 echo "Domain: $FULL_DOMAIN"
-echo "IP: $IP_ADDRESS"
-echo "TCP 1194 | UDP 110 | WS 80 | WSS 443 | Squid 8080"
-echo ""
-echo "Create VPN users (Linux PAM):"
-echo "  groupadd -f vpnusers"
-echo "  useradd -M -s /usr/sbin/nologin -G vpnusers USERNAME"
-echo "  passwd USERNAME"
-echo "Delete user:"
-echo "  userdel USERNAME"
-echo "=================================="
-
-echo "[+] Listening ports:"
-ss -lntup | grep -E ':(1194|110|80|443|8080)\b' || true
+echo "TCP 1194 | UDP 1198"
+echo "WS 80 | WSS 443"
+echo "SSL 442"
+echo "Squid 8080/8000"
