@@ -3,7 +3,9 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 ################################
+
 # INPUT CHECK
+
 ################################
 
 echo 1 > /proc/sys/net/ipv4/ip_forward
@@ -12,23 +14,27 @@ SERVER_ID="$1"
 INSTALL_TOKEN="$2"
 
 if [[ -z "$SERVER_ID" || -z "$INSTALL_TOKEN" ]]; then
-  echo "Usage: bash install.sh <server_id> <token>"
-  exit 1
+echo "Usage: bash install.sh <server_id> <token>"
+exit 1
 fi
 
 ################################
+
 # SYSTEM PREP
+
 ################################
 
 echo "[+] Installing packages..."
 
 apt update -y
-apt install -y curl wget jq sudo git openvpn easy-rsa squid stunnel4 iptables-persistent certbot python3
+apt install -y curl wget jq sudo git openvpn squid stunnel4 iptables-persistent certbot python3
 
 sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 || true
 
 ################################
+
 # FETCH DOMAIN
+
 ################################
 
 echo "[+] Fetching domain..."
@@ -48,17 +54,23 @@ FULL_DOMAIN="${SUBDOMAIN}.${DOMAIN_NAME}"
 
 echo "[+] Creating DNS record..."
 
-curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" \
-  -H "X-Auth-Email: $AUTH_EMAIL" \
-  -H "X-Auth-Key: $AUTH_KEY" \
-  -H "Content-Type: application/json" \
-  --data "{\"type\":\"A\",\"name\":\"$FULL_DOMAIN\",\"content\":\"$IP_ADDRESS\",\"ttl\":1,\"proxied\":false}"
+curl -fsS -X POST "${API_ENDPOINT%/}/${ZONE_ID}/dns_records" 
+-H "X-Auth-Email: $AUTH_EMAIL" 
+-H "X-Auth-Key: $AUTH_KEY" 
+-H "Content-Type: application/json" 
+--data "{"type":"A","name":"$FULL_DOMAIN","content":"$IP_ADDRESS","ttl":1,"proxied":false}"
 
-echo "[+] Waiting DNS..."
-sleep 10
+echo "[+] Waiting DNS propagation..."
+
+until ping -c1 "$FULL_DOMAIN" &>/dev/null; do
+echo "Waiting DNS..."
+sleep 5
+done
 
 ################################
+
 # SSL CERT
+
 ################################
 
 echo "[+] Requesting SSL..."
@@ -66,18 +78,25 @@ echo "[+] Requesting SSL..."
 systemctl stop ws-ovpn squid openvpn-server@tcp openvpn-server@udp 2>/dev/null || true
 fuser -k 80/tcp 443/tcp 2>/dev/null || true
 
-certbot certonly --standalone \
-  --preferred-challenges http \
-  -d "$FULL_DOMAIN" \
-  --non-interactive \
-  --agree-tos \
-  -m "admin@${DOMAIN_NAME}"
+certbot certonly --standalone 
+--preferred-challenges http 
+-d "$FULL_DOMAIN" 
+--non-interactive 
+--agree-tos 
+-m "admin@${DOMAIN_NAME}"
 
 SSL_CERT="/etc/letsencrypt/live/$FULL_DOMAIN/fullchain.pem"
 SSL_KEY="/etc/letsencrypt/live/$FULL_DOMAIN/privkey.pem"
 
+if [ ! -f "$SSL_CERT" ]; then
+echo "SSL certificate failed!"
+exit 1
+fi
+
 ################################
+
 # OPENVPN CERTIFICATES
+
 ################################
 
 echo "[+] Installing OpenVPN certificates..."
@@ -198,11 +217,13 @@ mkdir -p /etc/openvpn/server
 echo -e "port 1194\nproto tcp\n$COMMON_CFG" > /etc/openvpn/server/tcp.conf
 echo -e "port 1198\nproto udp\n$COMMON_CFG" > /etc/openvpn/server/udp.conf
 
-systemctl enable --now openvpn-server@tcp
-systemctl enable --now openvpn-server@udp
+systemctl enable openvpn-server@tcp
+systemctl enable openvpn-server@udp
 
 ################################
+
 # STUNNEL SSL 442
+
 ################################
 
 cat >/etc/stunnel/stunnel.conf <<EOF
@@ -215,10 +236,12 @@ accept = 442
 connect = 127.0.0.1:1194
 EOF
 
-systemctl enable --now stunnel4
+systemctl enable stunnel4
 
 ################################
+
 # WEBSOCKET 80 + 443
+
 ################################
 
 cat >/usr/local/bin/ws-ovpn.py <<PY
@@ -226,35 +249,39 @@ cat >/usr/local/bin/ws-ovpn.py <<PY
 import asyncio, ssl
 
 async def pipe(a,b):
-    try:
-        while True:
-            d = await a.read(4096)
-            if not d: break
-            b.write(d)
-            await b.drain()
-    except: pass
+try:
+while True:
+d = await a.read(4096)
+if not d: break
+b.write(d)
+await b.drain()
+except: pass
 
 async def handler(r,w):
-    d = await r.read(2048)
-    if b"websocket" not in d.lower():
-        w.close()
-        return
+d = await r.read(2048)
+if b"websocket" not in d.lower():
+w.close()
+return
 
-    w.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
-    await w.drain()
+```
+w.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+await w.drain()
 
-    rr,ww = await asyncio.open_connection("127.0.0.1",1194)
-    await asyncio.gather(pipe(r,ww),pipe(rr,w))
+rr,ww = await asyncio.open_connection("127.0.0.1",1194)
+await asyncio.gather(pipe(r,ww),pipe(rr,w))
+```
 
 async def main():
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain("$SSL_CERT","$SSL_KEY")
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("$SSL_CERT","$SSL_KEY")
 
-    s1 = await asyncio.start_server(handler,"0.0.0.0",80)
-    s2 = await asyncio.start_server(handler,"0.0.0.0",443,ssl=ctx)
+```
+s1 = await asyncio.start_server(handler,"0.0.0.0",80)
+s2 = await asyncio.start_server(handler,"0.0.0.0",443,ssl=ctx)
 
-    async with s1,s2:
-        await asyncio.gather(s1.serve_forever(),s2.serve_forever())
+async with s1,s2:
+    await asyncio.gather(s1.serve_forever(),s2.serve_forever())
+```
 
 asyncio.run(main())
 PY
@@ -275,10 +302,12 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now ws-ovpn
+systemctl enable ws-ovpn
 
 ################################
+
 # SQUID PROXY
+
 ################################
 
 cat >/etc/squid/squid.conf <<EOF
@@ -291,10 +320,12 @@ via off
 forwarded_for off
 EOF
 
-systemctl enable --now squid
+systemctl enable squid
 
 ################################
+
 # FIREWALL
+
 ################################
 
 IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
@@ -302,8 +333,10 @@ IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 iptables -F
 iptables -t nat -F
 
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
 for p in 22 80 442 443 1194 8080 8000; do
-  iptables -A INPUT -p tcp --dport $p -j ACCEPT
+iptables -A INPUT -p tcp --dport $p -j ACCEPT
 done
 
 iptables -A INPUT -p udp --dport 1198 -j ACCEPT
@@ -312,7 +345,21 @@ iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o $IFACE -j MASQUERADE
 iptables-save > /etc/iptables/rules.v4
 
 ################################
+
+# START SERVICES
+
+################################
+
+systemctl restart openvpn-server@tcp
+systemctl restart openvpn-server@udp
+systemctl restart stunnel4
+systemctl restart ws-ovpn
+systemctl restart squid
+
+################################
+
 # DONE
+
 ################################
 
 echo "============================"
